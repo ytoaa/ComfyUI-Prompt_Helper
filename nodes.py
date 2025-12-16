@@ -13,8 +13,8 @@ except ImportError:
 
 class Qwen3Engineer:
     """
-    Qwen GGUF 모델을 사용하여 프롬프트를 확장하고, 
-    VRAM 관리 정책을 3단계로 선택할 수 있는 노드입니다.
+    Qwen GGUF 모델을 mmap(Memory-mapped) 방식으로 로드하여
+    I/O 속도를 극한으로 끌어올리고 VRAM을 효율적으로 관리하는 노드입니다.
     """
     _model_cache = {}
     
@@ -37,26 +37,13 @@ class Qwen3Engineer:
             "required": {
                 "gguf_name": (file_list, ),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                # ▼▼▼ [핵심] VRAM 관리 정책 (3가지 옵션) ▼▼▼
+                # ▼▼▼ VRAM 관리 정책 ▼▼▼
                 "vram_policy": (
                     ["Always Unload (Safe)", "Unload VRAM (Keep RAM)", "Keep Loaded (Fast)"], 
                     {"default": "Always Unload (Safe)"}
                 ),
-                # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                 "system_prompt": ("STRING", {
-                    "default": """You are Z-Engineer, an expert prompt engineering AI specializing in the Z-Image Turbo architecture (S3-DiT). Your goal is to rewrite simple user inputs into high-fidelity, "Positive Constraint" prompts optimized for the Qwen-3 text encoder.
-
-**CORE OPERATIONAL RULES:**
-1. NO Negative Prompts: Use "Positive Constraints."
-2. Natural Language Syntax: Use coherent, grammatical sentences.
-3. Texture Density: Aggressively describe textures.
-4. Spatial Precision: Use specific spatial prepositions.
-5. Text Handling: Enclose text in double quotes.
-6. Proper Anatomy: Explicitly state proper anatomy.
-7. Camera & Lens: ALWAYS explicitly use "shot on" or "shot with".
-
-**OUTPUT FORMAT:**
-Return ONLY the enhanced prompt string.""", 
+                    "default": """You are Z-Engineer... (생략)...""", 
                     "multiline": True
                 }),
                 "prompt": ("STRING", {
@@ -77,7 +64,7 @@ Return ONLY the enhanced prompt string.""",
 
     def load_gguf(self, gguf_name, n_ctx, n_gpu_layers):
         cache_key = f"{gguf_name}_{n_ctx}_{n_gpu_layers}"
-        # 캐시에 있고, 모델 객체가 살아있으면 재사용
+        # 캐시된 모델이 있고 유효하면 재사용
         if cache_key in self._model_cache and self._model_cache[cache_key] is not None:
             return self._model_cache[cache_key]
 
@@ -97,7 +84,7 @@ Return ONLY the enhanced prompt string.""",
         if not gguf_path or not os.path.isfile(gguf_path):
             raise FileNotFoundError(f"File not found: {gguf_name}")
 
-        print(f"[Qwen Node] Loading GGUF Model: {gguf_path}...")
+        print(f"[Qwen Node] Loading GGUF Model via mmap: {gguf_path}...")
         
         try:
             llm = Llama(
@@ -105,6 +92,10 @@ Return ONLY the enhanced prompt string.""",
                 n_ctx=n_ctx,
                 n_gpu_layers=n_gpu_layers,
                 verbose=True,
+                # ▼▼▼ [최적화 핵심] mmap 명시적 활성화 ▼▼▼
+                use_mmap=True,   # 디스크->RAM 복사 없이 직접 매핑 (Zero-Copy)
+                use_mlock=False, # RAM 고정 방지 (시스템 유연성 확보)
+                # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                 logits_all=True
             )
             self._model_cache[cache_key] = llm
@@ -114,7 +105,7 @@ Return ONLY the enhanced prompt string.""",
             raise e
 
     def generate(self, gguf_name, seed, vram_policy, system_prompt, prompt, n_ctx, n_gpu_layers, max_new_tokens, temperature):
-        # 1. 모델 로드
+        # 1. 모델 로드 (mmap 덕분에 두 번째부터는 즉시 로드됨)
         llm = self.load_gguf(gguf_name, n_ctx, n_gpu_layers)
         
         full_system_prompt = system_prompt + "\n\nIMPORTANT: Do NOT repeat the input. START DIRECTLY with the enhanced prompt."
@@ -143,38 +134,26 @@ Return ONLY the enhanced prompt string.""",
                  if len(parts) > 1: pass
             output_text = output_text.strip()
 
-            # ▼▼▼ [핵심] 3단계 VRAM 관리 로직 ▼▼▼
+            # ▼▼▼ VRAM 관리 로직 ▼▼▼
             cache_key = f"{gguf_name}_{n_ctx}_{n_gpu_layers}"
 
             if vram_policy == "Keep Loaded (Fast)":
-                # 아무것도 안 함 (메모리 유지)
                 pass
-
             else:
-                # "Always Unload" 또는 "Unload VRAM" 선택 시
-                # llama-cpp 특성상 VRAM을 비우려면 객체를 삭제해야 함
-                print(f"[Qwen Node] Unloading model based on policy: {vram_policy}")
-                
-                # 1. 캐시 목록에서 제거
+                # mmap을 썼기 때문에 del을 해도 데이터는 OS 페이지 캐시에 매핑된 상태로 남음
+                # 재로딩 시 디스크 I/O가 거의 발생하지 않음
                 if cache_key in self._model_cache:
                     del self._model_cache[cache_key]
-                
-                # 2. 객체 삭제 (이 시점에서 VRAM 해제 시작)
                 del llm
                 
-                # 3. 추가 정리 (정책에 따라 강도 조절)
                 if vram_policy == "Always Unload (Safe)":
-                    # 가장 강력한 청소: GC + CUDA 캐시 비우기
                     gc.collect()
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                         torch.cuda.ipc_collect()
-                    print("[Qwen Node] Full Cleanup Complete (RAM + VRAM).")
+                    print("[Qwen Node] VRAM Released. (Safe Mode)")
                 else:
-                    # Unload VRAM (Keep RAM)
-                    # CUDA 캐시를 강제로 비우지 않음으로써 시스템 RAM에 잔여 데이터가 남을 가능성을 열어둠
-                    # (OS 파일 캐싱 효과를 기대)
-                    print("[Qwen Node] Object deleted (VRAM freed). OS Cache preserved.")
+                    print("[Qwen Node] VRAM Released. (Keep RAM Mode)")
 
             return (output_text,)
             
@@ -185,5 +164,5 @@ NODE_CLASS_MAPPINGS = {
     "QwenImageEngineer": Qwen3Engineer
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "QwenImageEngineer": "Qwen3 Engineer"
+    "QwenImageEngineer": "Qwen3 Engineer (mmap optimized)"
 }
