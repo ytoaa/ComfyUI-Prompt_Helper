@@ -135,31 +135,60 @@ Shift: 7.0 (Crucial for skin texture)""",
 
     # ▼▼▼ [수정됨] seed 인자 추가 및 적용 ▼▼▼
     def generate(self, gguf_name, seed, system_prompt, prompt, n_ctx, n_gpu_layers, max_new_tokens, temperature):
-        llm = self.load_gguf(gguf_name, n_ctx, n_gpu_layers)
-        
-        messages = [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-
-        try:
-            # create_chat_completion에 seed 전달하여 결과 다양성 확보
-            response = llm.create_chat_completion(
-                messages=messages,
-                max_tokens=max_new_tokens,
-                temperature=temperature,
-                seed=seed  # ComfyUI에서 받은 Seed 값 적용
-            )
-            output_text = response["choices"][0]["message"]["content"]
-            return (output_text,)
-        except Exception as e:
-            return (f"Error during GGUF generation: {e}",)
+            llm = self.load_gguf(gguf_name, n_ctx, n_gpu_layers)
+            
+            # 시스템 프롬프트에 "입력을 반복하지 말라"는 지시 추가 (안전장치 1)
+            # 기존 system_prompt 뒤에 강력한 지시사항을 덧붙입니다.
+            full_system_prompt = system_prompt + "\n\nIMPORTANT: Do NOT repeat the input. START DIRECTLY with the enhanced prompt."
+    
+            messages = [
+                {
+                    "role": "system",
+                    "content": full_system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+    
+            try:
+                response = llm.create_chat_completion(
+                    messages=messages,
+                    max_tokens=max_new_tokens,
+                    temperature=temperature,
+                    seed=seed
+                )
+                output_text = response["choices"][0]["message"]["content"]
+    
+                # ▼▼▼ [추가됨] 불필요한 태그/입력 반복 제거 로직 (안전장치 2) ▼▼▼
+                
+                # 1. "### Response:" 또는 "Response:" 같은 태그가 있으면 그 뒤만 잘라냄
+                if "### Response:" in output_text:
+                    output_text = output_text.split("### Response:")[-1].strip()
+                elif "Response:" in output_text:
+                    output_text = output_text.split("Response:")[-1].strip()
+                elif "### Output:" in output_text:
+                    output_text = output_text.split("### Output:")[-1].strip()
+    
+                # 2. 만약 모델이 "### Input:" 형태로 내 질문을 반복했다면, 그 부분도 제거
+                if "### Input:" in output_text:
+                    # Response가 없이 Input만 있는 경우를 대비해 한번 더 체크
+                    parts = output_text.split("### Input:")
+                    # 보통 Input이 먼저 나오고 뒤에 내용이 나오므로, 가장 마지막 덩어리가 실제 답변일 확률이 높음
+                    if len(parts) > 1: 
+                         # 내용이 섞여있을 수 있으므로 단순히 자르기보단, 
+                         # 위의 Response로 자르는 로직이 먼저 작동했으면 이미 해결됨.
+                         pass 
+    
+                # 3. 혹시 모를 앞뒤 공백 제거
+                output_text = output_text.strip()
+                
+                # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+    
+                return (output_text,)
+            except Exception as e:
+                return (f"Error during GGUF generation: {e}",)
 
 
 NODE_CLASS_MAPPINGS = {
