@@ -50,7 +50,7 @@ class Qwen3Engineer:
                     "default": "Generate a detailed prompt.", 
                     "multiline": True
                 }),
-                "n_ctx": ("INT", {"default": 4096, "min": 2048, "max": 32768}),
+                "n_ctx": ("INT", {"default": 2048, "min": 64, "max": 32768, "tooltip": "프롬프트 작업용이면 1024~2048이면 충분합니다."}),
                 "n_gpu_layers": ("INT", {"default": -1, "min": -1, "max": 100}),
                 "max_new_tokens": ("INT", {"default": 512, "min": 16, "max": 4096}),
                 "temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.01}),
