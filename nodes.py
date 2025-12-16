@@ -1,6 +1,7 @@
 import folder_paths
 import os
 
+# llama_cpp 라이브러리 로드 확인
 try:
     from llama_cpp import Llama
     LLAMA_CPP_AVAILABLE = True
@@ -8,13 +9,16 @@ except ImportError:
     LLAMA_CPP_AVAILABLE = False
     print("\033[31m[Qwen Node Error] llama-cpp-python 未安装！无法加载 GGUF 模型。请运行: pip install llama-cpp-python\033[0m")
 
-
-
 class Qwen3Engineer:
+    """
+    Qwen GGUF 모델을 사용하여 프롬프트를 확장/개선하는 ComfyUI 커스텀 노드입니다.
+    Seed 기능을 추가하여 매번 다른 결과를 생성할 수 있습니다.
+    """
     _model_cache = {}
     
     @classmethod
     def INPUT_TYPES(s):
+        # 1. text_encoders 폴더에서 .gguf 파일 검색
         file_list = []
         text_encoder_paths = folder_paths.get_folder_paths("text_encoders")
         for path in text_encoder_paths:
@@ -31,6 +35,9 @@ class Qwen3Engineer:
         return {
             "required": {
                 "gguf_name": (file_list, ),
+                # ▼▼▼ [추가됨] Seed 입력 (고정/증가/랜덤 설정 가능) ▼▼▼
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                 "system_prompt": ("STRING", {
                     "default": """You are Z-Engineer, an expert prompt engineering AI specializing in the Z-Image Turbo architecture (S3-DiT). Your goal is to rewrite simple user inputs into high-fidelity, "Positive Constraint" prompts optimized for the Qwen-3 text encoder and the 8-step distilled inference process.
 
@@ -72,8 +79,8 @@ Shift: 7.0 (Crucial for skin texture)""",
                     "default": "Generate a detailed prompt.", 
                     "multiline": True
                 }),
-                "n_ctx": ("INT", {"default": 4096, "min": 2048, "max": 32768, "tooltip": "上下文窗口大小"}),
-                "n_gpu_layers": ("INT", {"default": -1, "min": -1, "max": 100, "tooltip": "-1 表示将所有层加载到 GPU (推荐)"}),
+                "n_ctx": ("INT", {"default": 4096, "min": 2048, "max": 32768, "tooltip": "Context Window Size"}),
+                "n_gpu_layers": ("INT", {"default": -1, "min": -1, "max": 100, "tooltip": "-1 means load all layers to GPU (Recommended)"}),
                 "max_new_tokens": ("INT", {"default": 512, "min": 16, "max": 4096}),
                 "temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.01}),
             }
@@ -85,6 +92,7 @@ Shift: 7.0 (Crucial for skin texture)""",
     CATEGORY = "QwenTextEngineer"
 
     def load_gguf(self, gguf_name, n_ctx, n_gpu_layers):
+        # 모델 캐싱: 동일한 모델 설정이면 다시 로드하지 않음
         cache_key = f"{gguf_name}_{n_ctx}_{n_gpu_layers}"
         if cache_key in self._model_cache:
             return self._model_cache[cache_key]
@@ -108,6 +116,7 @@ Shift: 7.0 (Crucial for skin texture)""",
         print(f"Loading GGUF model from: {gguf_path}...")
         
         try:
+            # llama-cpp-python 모델 로드
             llm = Llama(
                 model_path=gguf_path,
                 n_ctx=n_ctx,
@@ -124,7 +133,8 @@ Shift: 7.0 (Crucial for skin texture)""",
             print(f"Error loading GGUF model: {e}")
             raise e
 
-    def generate(self, gguf_name, system_prompt, prompt, n_ctx, n_gpu_layers, max_new_tokens, temperature):
+    # ▼▼▼ [수정됨] seed 인자 추가 및 적용 ▼▼▼
+    def generate(self, gguf_name, seed, system_prompt, prompt, n_ctx, n_gpu_layers, max_new_tokens, temperature):
         llm = self.load_gguf(gguf_name, n_ctx, n_gpu_layers)
         
         messages = [
@@ -139,10 +149,12 @@ Shift: 7.0 (Crucial for skin texture)""",
         ]
 
         try:
+            # create_chat_completion에 seed 전달하여 결과 다양성 확보
             response = llm.create_chat_completion(
                 messages=messages,
                 max_tokens=max_new_tokens,
                 temperature=temperature,
+                seed=seed  # ComfyUI에서 받은 Seed 값 적용
             )
             output_text = response["choices"][0]["message"]["content"]
             return (output_text,)
